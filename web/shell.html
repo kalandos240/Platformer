@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#102538">
+  <title>Pingus</title>
+  <script src="/sdk.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #102538; }
+    body { display: grid; place-items: center; font-family: Arial, sans-serif; touch-action: none; }
+    #game-shell { position: fixed; inset: 0; display: grid; place-items: center; background: #102538; }
+    #canvas { display: block; outline: 0; background: #000; image-rendering: auto; }
+    #loading {
+      position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
+      background: linear-gradient(#173b56, #0d2031); color: #fff; transition: opacity .2s ease;
+    }
+    #loading[hidden] { opacity: 0; pointer-events: none; }
+    #loading-card { width: min(78vw, 420px); padding: 24px; text-align: center; }
+    #loading-title { margin: 0 0 14px; font-size: clamp(26px, 5vw, 46px); }
+    #loading-status { min-height: 1.4em; margin: 10px 0; opacity: .9; overflow-wrap: anywhere; }
+    #progress { width: 100%; height: 12px; accent-color: #8ccf55; }
+  </style>
+</head>
+<body>
+  <main id="game-shell">
+    <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+    <section id="loading" aria-live="polite">
+      <div id="loading-card">
+        <h1 id="loading-title">Pingus</h1>
+        <div id="loading-status">Загрузка…</div>
+        <progress id="progress" max="100" value="0"></progress>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById('canvas');
+      const loading = document.getElementById('loading');
+      const status = document.getElementById('loading-status');
+      const progress = document.getElementById('progress');
+      let readySent = false;
+      let saveBusy = false;
+      let saveAgain = false;
+      let autosaveTimer = 0;
+      let language = 'ru';
+
+      const strings = {
+        ru: { loading: 'Загрузка…', failed: 'Не удалось запустить игру.' },
+        en: { loading: 'Loading…', failed: 'The game could not be started.' }
+      };
+
+      const normalizeLanguage = (value) =>
+        String(value || '').toLowerCase().split(/[-_]/)[0] === 'ru' ? 'ru' : 'en';
+
+      const applyLanguage = (value) => {
+        language = normalizeLanguage(value);
+        document.documentElement.lang = language;
+        if (!readySent) status.textContent = strings[language].loading;
+        try {
+          const locale = language === 'ru' ? 'ru_RU.UTF-8' : 'en_US.UTF-8';
+          ENV.LANG = locale;
+          ENV.LC_ALL = locale;
+        } catch (_) {}
+      };
+
+      const fitCanvas = () => {
+        const logicalWidth = Math.max(1, canvas.width || 800);
+        const logicalHeight = Math.max(1, canvas.height || 600);
+        const scale = Math.min(innerWidth / logicalWidth, innerHeight / logicalHeight);
+        canvas.style.width = `${Math.max(1, Math.floor(logicalWidth * scale))}px`;
+        canvas.style.height = `${Math.max(1, Math.floor(logicalHeight * scale))}px`;
+      };
+      addEventListener('resize', fitCanvas, { passive: true });
+      new MutationObserver(fitCanvas).observe(canvas, { attributes: true, attributeFilter: ['width', 'height'] });
+      fitCanvas();
+
+      const audioContext = () =>
+        window.SDL?.audioContext || window.SDL2?.audioContext || window.AL?.currentContext?.audioCtx || null;
+
+      const pauseAudio = (paused) => {
+        const context = audioContext();
+        if (!context) return;
+        const operation = paused ? context.suspend?.() : context.resume?.();
+        operation?.catch?.(() => {});
+      };
+
+      window.pingusSaveNow = () => {
+        if (typeof FS === 'undefined' || typeof FS.syncfs !== 'function') return;
+        if (saveBusy) {
+          saveAgain = true;
+          return;
+        }
+        saveBusy = true;
+        FS.syncfs(false, (error) => {
+          saveBusy = false;
+          if (error) console.warn('Pingus save synchronization failed:', error);
+          if (saveAgain) {
+            saveAgain = false;
+            window.pingusSaveNow();
+          }
+        });
+      };
+
+      window.yandexSDKPromise = (async () => {
+        try {
+          if (typeof YaGames === 'undefined') return null;
+          const ysdk = await YaGames.init();
+          window.ysdk = ysdk;
+          applyLanguage(ysdk?.environment?.i18n?.lang);
+          return ysdk;
+        } catch (error) {
+          console.warn('Yandex Games SDK initialization failed:', error);
+          return null;
+        }
+      })();
+
+      window.pingusMarkReady = async () => {
+        if (readySent) return;
+        readySent = true;
+        fitCanvas();
+        loading.hidden = true;
+        canvas.focus({ preventScroll: true });
+        if (!autosaveTimer) autosaveTimer = setInterval(window.pingusSaveNow, 15000);
+        const ysdk = await window.yandexSDKPromise;
+        try { ysdk?.features?.LoadingAPI?.ready(); } catch (error) { console.warn(error); }
+      };
+
+      const showError = (message) => {
+        loading.hidden = false;
+        status.textContent = message || strings[language].failed;
+        progress.removeAttribute('value');
+      };
+
+      document.addEventListener('visibilitychange', () => {
+        pauseAudio(document.hidden);
+        if (document.hidden) window.pingusSaveNow();
+      });
+      addEventListener('blur', () => pauseAudio(true));
+      addEventListener('focus', () => pauseAudio(false));
+      addEventListener('pagehide', window.pingusSaveNow);
+      addEventListener('beforeunload', window.pingusSaveNow);
+      addEventListener('error', (event) => { if (!readySent) showError(event.message); });
+      addEventListener('unhandledrejection', (event) => {
+        if (!readySent) showError(String(event.reason || strings[language].failed));
+      });
+
+      const unlockAudio = () => pauseAudio(false);
+      addEventListener('pointerdown', unlockAudio, { once: true, passive: true });
+      addEventListener('keydown', unlockAudio, { once: true });
+      document.addEventListener('keydown', (event) => {
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) {
+          event.preventDefault();
+        }
+      }, { passive: false });
+
+      applyLanguage(navigator.language);
+
+      window.Module = {
+        canvas,
+        preRun: [() => {
+          try { FS.mkdir('/home'); } catch (_) {}
+          try { FS.mkdir('/home/web_user'); } catch (_) {}
+          try { ENV.HOME = '/home/web_user'; } catch (_) {}
+
+          addRunDependency('pingus-locale');
+          Promise.race([
+            window.yandexSDKPromise,
+            new Promise((resolve) => setTimeout(() => resolve(null), 4000))
+          ]).finally(() => removeRunDependency('pingus-locale'));
+
+          addRunDependency('pingus-idbfs');
+          try {
+            FS.mount(IDBFS, {}, '/home/web_user');
+            FS.syncfs(true, (error) => {
+              if (error) console.warn('Pingus save restore failed:', error);
+              removeRunDependency('pingus-idbfs');
+            });
+          } catch (error) {
+            console.warn('IDBFS unavailable:', error);
+            removeRunDependency('pingus-idbfs');
+          }
+        }],
+        print: (message) => console.log(message),
+        printErr: (message) => console.error(message),
+        onAbort: (reason) => showError(`Pingus stopped: ${reason || 'unknown error'}`),
+        setStatus: (message) => {
+          if (!message) return;
+          status.textContent = message;
+          const match = /\((\d+)\/(\d+)\)/.exec(message);
+          if (match) {
+            progress.max = Number(match[2]);
+            progress.value = Number(match[1]);
+          }
+        },
+        monitorRunDependencies: (left) => { if (!left) progress.value = progress.max; }
+      };
+    })();
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
