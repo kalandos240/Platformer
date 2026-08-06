@@ -1,4 +1,5 @@
-state=running
+job_status=success
+compile_exit=1
 run_id=31128487522
 commit=9596118e5fc0aeea0256fb671520be0f8e38261d
-started_at=2026-08-06T21:42:26Z
+zip_present=no
