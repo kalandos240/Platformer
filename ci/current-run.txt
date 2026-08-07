@@ -1,4 +1,0 @@
-state=running
-run_id=31206997833
-commit=654f6e5956ec0276a5d8d9a1816dadc9e4b96689
-started_at=2026-08-07T18:27:11Z
